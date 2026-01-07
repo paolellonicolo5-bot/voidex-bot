@@ -491,3 +491,311 @@ async function connectionUpdate(update) {
   }
 
 
+
+  if (connection === 'close') {
+    const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.output?.payload?.statusCode;
+    if (reason === DisconnectReason.badSession && !global.connectionMessagesPrinted.badSession) {
+      console.log(chalk.bold.redBright(`\n⚠️❗ SESSIONE NON VALIDA, ELIMINA LA CARTELLA ${global.authFile} E SCANSIONA IL CODICE QR ⚠️`));
+      global.connectionMessagesPrinted.badSession = true;
+      await global.reloadHandler(true).catch(console.error);
+    } else if (reason === DisconnectReason.connectionLost && !global.connectionMessagesPrinted.connectionLost) {
+      console.log(chalk.bold.blueBright(`\n╭⭑⭒━━━✦❘༻ ⚠️  CONNESSIONE PERSA COL SERVER ༺❘✦━━━⭒⭑\n┃      🔄 RICONNESSIONE IN CORSO... \n╰⭑⭒━━━✦❘༻☾⋆₊✧ chatunity-bot ✧₊⁺⋆☽༺❘✦━━━⭒⭑`));
+      global.connectionMessagesPrinted.connectionLost = true;
+      await global.reloadHandler(true).catch(console.error);
+    } else if (reason === DisconnectReason.connectionReplaced && !global.connectionMessagesPrinted.connectionReplaced) {
+      console.log(chalk.bold.yellowBright(`╭⭑⭒━━━✦❘༻ ⚠️  CONNESSIONE SOSTITUITA ༺❘✦━━━⭒⭑\n┃  È stata aperta un'altra sessione, \n┃  chiudi prima quella attuale.\n╰⭑⭒━━━✦❘༻☾⋆⁺₊✧ chatunity-bot ✧₊⁺⋆☽༺❘✦━━━⭒⭑`));
+      global.connectionMessagesPrinted.connectionReplaced = true;
+    } else if (reason === DisconnectReason.loggedOut && !global.connectionMessagesPrinted.loggedOut) {
+      console.log(chalk.bold.redBright(`\n⚠️ DISCONNESSO, ELIMINA LA CARTELLA ${global.authFile} E SCANSIONA IL CODICE QR ⚠️`));
+      global.connectionMessagesPrinted.loggedOut = true;
+      await global.reloadHandler(true).catch(console.error);
+    } else if (reason === DisconnectReason.restartRequired && !global.connectionMessagesPrinted.restartRequired) {
+      console.log(chalk.bold.magentaBright(`\n⭑⭒━━━✦❘༻ CONNESSO CON SUCCESSO  ༺❘✦━━━⭒⭑`));
+      global.connectionMessagesPrinted.restartRequired = true;
+      await global.reloadHandler(true).catch(console.error);
+    } else if (reason === DisconnectReason.timedOut && !global.connectionMessagesPrinted.timedOut) {
+      console.log(chalk.bold.yellowBright(`\n╭⭑⭒━━━✦❘༻ ⌛ TIMEOUT CONNESSIONE ༺❘✦━━━⭒⭑\n┃     🔄 RICONNESSIONE IN CORSO...\n╰⭑⭒━━━✦❘༻☾⋆⁺₊✧ chatunity-bot ✧₊⁺⋆☽༺❘✦━━━⭒⭑`));
+      global.connectionMessagesPrinted.timedOut = true;
+      await global.reloadHandler(true).catch(console.error);
+    } else if (reason !== DisconnectReason.restartRequired && reason !== DisconnectReason.connectionClosed && !global.connectionMessagesPrinted.unknown) {
+      console.log(chalk.bold.redBright(`\n⚠️❗ MOTIVO DISCONNESSIONE SCONOSCIUTO: ${reason || 'Non trovato'} >> ${connection || 'Non trovato'}`));
+      global.connectionMessagesPrinted.unknown = true;
+    }
+  }
+}
+
+
+process.on('uncaughtException', console.error);
+
+
+async function connectSubBots() {
+  const subBotDirectory = './chatunity-sub';
+  if (!existsSync(subBotDirectory)) {
+    console.log(chalk.bold.magentaBright('non ci sono Sub-Bot collegati. Creazione directory...'));
+    try {
+      mkdirSync(subBotDirectory, { recursive: true });
+      console.log(chalk.bold.green('✅ Directory chatunity-sub creata con successo.'));
+    } catch (err) {
+      console.log(chalk.bold.red('❌ Errore nella creazione della directory chatunity-sub:', err.message));
+      return;
+    }
+    return;
+  }
+
+
+  try {
+    const subBotFolders = readdirSync(subBotDirectory).filter(file =>
+      statSync(join(subBotDirectory, file)).isDirectory()
+    );
+
+
+    if (subBotFolders.length === 0) {
+      console.log(chalk.bold.magenta('Nessun subbot collegato'));
+      return;
+    }
+
+
+    const botPromises = subBotFolders.map(async (folder) => {
+      const subAuthFile = join(subBotDirectory, folder);
+      if (existsSync(join(subAuthFile, 'creds.json'))) {
+        try {
+          const { state: subState, saveCreds: subSaveCreds } = await useMultiFileAuthState(subAuthFile);
+          const subConn = makeWASocket({
+            ...connectionOptions,
+            auth: {
+              creds: subState.creds,
+              keys: makeCacheableSignalKeyStore(subState.keys, logger),
+            },
+          });
+
+
+          subConn.ev.on('creds.update', subSaveCreds);
+          subConn.ev.on('connection.update', connectionUpdate);
+          return subConn;
+        } catch (err) {
+          console.log(chalk.bold.red(`❌ Errore nella connessione del Sub-Bot ${folder}:`, err.message));
+          return null;
+        }
+      }
+      return null;
+    });
+
+
+    const bots = await Promise.all(botPromises);
+    global.conns = bots.filter(Boolean);
+
+
+    if (global.conns.length > 0) {
+      console.log(chalk.bold.magentaBright(`🌙 ${global.conns.length} Sub-Bot si sono connessi con successo.`));
+    } else {
+      console.log(chalk.bold.yellow('⚠️ Nessun Sub-Bot è riuscito a connettersi.'));
+    }
+  } catch (err) {
+    console.log(chalk.bold.red('❌ Errore generale nella connessione dei Sub-Bot:', err.message));
+  }
+}
+
+
+(async () => {
+  global.conns = [];
+  try {
+    conn.ev.on('connection.update', connectionUpdate);
+    conn.ev.on('creds.update', saveCreds);
+
+    console.log(chalk.bold.magenta(`
+╭﹕₊˚ ★ ⁺˳ꕤ₊⁺・꒱
+  ⋆  ︵︵ ★ ChatUnity connesso ★ ︵︵ ⋆
+╰. ꒷꒦ ꒷꒦‧˚₊˚꒷꒦꒷‧˚₊˚꒷꒦꒷`));
+    await connectSubBots();
+  } catch (error) {
+    console.error(chalk.bold.bgRedBright(`🥀 Errore nell'avvio del bot: `, error));
+  }
+})();
+
+
+let isInit = true;
+let handler = await import('./handler.js');
+global.reloadHandler = async function (restatConn) {
+  try {
+    const Handler = await import(`./handler.js?update=${Date.now()}`).catch(console.error);
+    if (Object.keys(Handler || {}).length) handler = Handler;
+  } catch (e) {
+    console.error(e);
+  }
+  if (restatConn) {
+    const oldChats = global.conn.chats;
+    try {
+      global.conn.ws.close();
+    } catch { }
+    conn.ev.removeAllListeners();
+    global.conn = makeWASocket(connectionOptions, { chats: oldChats });
+    global.store.bind(global.conn.ev);
+    isInit = true;
+  }
+  if (!isInit) {
+    conn.ev.off('messages.upsert', conn.handler);
+    conn.ev.off('group-participants.update', conn.participantsUpdate);
+    conn.ev.off('groups.update', conn.groupsUpdate);
+    conn.ev.off('message.delete', conn.onDelete);
+    conn.ev.off('call', conn.onCall);
+    conn.ev.off('connection.update', conn.connectionUpdate);
+    conn.ev.off('creds.update', conn.credsUpdate);
+  }
+
+
+  conn.welcome = '@user benvenuto/a in @subject';
+  conn.bye = '@user ha abbandonato il gruppo';
+  conn.spromote = '@user è stato promosso ad amministratore';
+  conn.sdemote = '@user non è più amministratore';
+  conn.sIcon = 'immagine gruppo modificata';
+  conn.sRevoke = 'link reimpostato, nuovo link: @revoke';
+
+
+  conn.handler = handler.handler.bind(global.conn);
+  conn.participantsUpdate = handler.participantsUpdate.bind(global.conn);
+  conn.groupsUpdate = handler.groupsUpdate.bind(global.conn);
+  conn.onDelete = handler.deleteUpdate.bind(global.conn);
+  conn.onCall = handler.callUpdate.bind(global.conn);
+  conn.connectionUpdate = connectionUpdate.bind(global.conn);
+  conn.credsUpdate = saveCreds.bind(global.conn, true);
+
+
+  conn.ev.on('messages.upsert', conn.handler);
+  conn.ev.on('group-participants.update', conn.participantsUpdate);
+  conn.ev.on('groups.update', conn.groupsUpdate);
+  conn.ev.on('message.delete', conn.onDelete);
+  conn.ev.on('call', conn.onCall);
+  conn.ev.on('connection.update', conn.connectionUpdate);
+  conn.ev.on('creds.update', conn.credsUpdate);
+  isInit = false;
+  return true;
+};
+
+
+const pluginFolder = global.__dirname(join(__dirname, './plugins/index'));
+const pluginFilter = (filename) => /\.js$/.test(filename);
+global.plugins = {};
+
+
+async function filesInit() {
+  for (const filename of readdirSync(pluginFolder).filter(pluginFilter)) {
+    try {
+      const file = global.__filename(join(pluginFolder, filename));
+      const module = await import(file);
+      global.plugins[filename] = module.default || module;
+    } catch (e) {
+      conn.logger.error(e);
+      delete global.plugins[filename];
+    }
+  }
+}
+
+
+filesInit().then((_) => Object.keys(global.plugins)).catch(console.error);
+
+
+global.reload = async (_ev, filename) => {
+  if (pluginFilter(filename)) {
+    const dir = global.__filename(join(pluginFolder, filename), true);
+    if (filename in global.plugins) {
+      if (existsSync(dir)) conn.logger.info(chalk.green(`✅ AGGIORNATO - '${filename}' CON SUCCESSO`));
+      else {
+        conn.logger.warn(`🗑️ FILE ELIMINATO: '${filename}'`);
+        return delete global.plugins[filename];
+      }
+    } else conn.logger.info(`🆕 NUOVO PLUGIN RILEVATO: '${filename}'`);
+    const err = syntaxerror(fs.readFileSync(dir), filename, {
+      sourceType: 'module',
+      allowAwaitOutsideFunction: true,
+    });
+    if (err) conn.logger.error(`❌ ERRORE DI SINTASSI IN: '${filename}'\n${format(err)}`);
+    else {
+      try {
+        const module = (await import(`${global.__filename(dir)}?update=${Date.now()}`));
+        global.plugins[filename] = module.default || module;
+      } catch (e) {
+        conn.logger.error(`⚠️ ERRORE NEL PLUGIN: '${filename}\n${format(e)}'`);
+      } finally {
+        global.plugins = Object.fromEntries(Object.entries(global.plugins).sort(([a], [b]) => a.localeCompare(b)));
+      }
+    }
+  }
+};
+
+
+Object.freeze(global.reload);
+const pluginWatcher = watch(pluginFolder, global.reload);
+pluginWatcher.setMaxListeners(20);
+await global.reloadHandler();
+
+
+async function _quickTest() {
+  const test = await Promise.all([
+    spawn('ffmpeg'),
+    spawn('ffprobe'),
+    spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-filter_complex', 'color', '-frames:v', '1', '-f', 'webp', '-']),
+    spawn('convert'),
+    spawn('magick'),
+    spawn('gm'),
+    spawn('find', ['--version']),
+  ].map((p) => {
+    return Promise.race([
+      new Promise((resolve) => {
+        p.on('close', (code) => {
+          resolve(code !== 127);
+        });
+      }),
+      new Promise((resolve) => {
+        p.on('error', (_) => resolve(false));
+      })
+    ]);
+  }));
+  const [ffmpeg, ffprobe, ffmpegWebp, convert, magick, gm, find] = test;
+  const s = global.support = { ffmpeg, ffprobe, ffmpegWebp, convert, magick, gm, find };
+  Object.freeze(global.support);
+}
+
+
+function clearDirectory(dirPath) {
+  if (!existsSync(dirPath)) {
+    try {
+      mkdirSync(dirPath, { recursive: true });
+    } catch (e) {
+      console.error(chalk.red(`Errore nella creazione della directory ${dirPath}:`, e));
+    }
+    return;
+  }
+  const filenames = readdirSync(dirPath);
+  filenames.forEach(file => {
+    const filePath = join(dirPath, file);
+    try {
+      const stats = statSync(filePath);
+      if (stats.isFile()) {
+        unlinkSync(filePath);
+      } else if (stats.isDirectory()) {
+        rmSync(filePath, { recursive: true, force: true });
+      }
+    } catch (e) {
+      console.error(chalk.red(`Errore nella pulizia del file ${filePath}:`, e));
+    }
+  });
+}
+
+
+function ripristinaTimer(conn) {
+  if (conn.timerReset) clearInterval(conn.timerReset);
+  conn.timerReset = setInterval(async () => {
+    if (stopped === 'close' || !conn || !conn.user) return;
+    await clearDirectory(join(__dirname, 'tmp'));
+    await clearDirectory(join(__dirname, 'temp'));
+  }, 1000 * 60 * 30);
+}
+
+
+_quickTest().then(() => conn.logger.info(chalk.bold.bgBlueBright(``)));
+let filePath = fileURLToPath(import.meta.url);
+const mainWatcher = watch(filePath, async () => {
+  console.log(chalk.bold.bgBlueBright("Main Aggiornato"));
+  await global.reloadHandler(true).catch(console.error);
+});
+mainWatcher.setMaxListeners(20);
